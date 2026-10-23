@@ -30,6 +30,9 @@ export default function RootLayout({
             <Link href="/about" className="hover:text-blue-600 transition">
               About
             </Link>
+            <Link href="/filter" className="hover:text-blue-600 transition">
+              Filter
+            </Link>
           </nav>
         </header>
         <main className="max-w-4xl mx-auto p-6 flex-1 w-full">{children}</main>

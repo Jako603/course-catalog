@@ -1,41 +1,77 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Course Catalog (Frontend)
 
-## Getting Started
+Next.js frontend for the course catalog. Fetches data from the FastAPI backend.
 
-First, run the development server:
+## How to run
 
+Start the **backend first**, then the frontend.
+
+**Backend:**
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd course-catalog-api
+.venv\Scripts\Activate.ps1
+fastapi dev main.py
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+**Frontend:**
+```bash
+cd course-catalog
+npm run dev
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Open http://localhost:3000
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Environment variables
 
-## Learn More
+Create a `.env.local` file in the project root (next to `package.json`):
 
-To learn more about Next.js, take a look at the following resources:
+```
+API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `API_URL` — used by Server Components (getCourses, getCourse); never exposed to the browser
+- `NEXT_PUBLIC_API_URL` — used by Client Components (ElectiveFilter, LikeButton, EnrollForm); written into browser JS
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Decisions
 
-## Deploy on Vercel
+`generateStaticParams` was removed from `/courses/[id]/page.tsx` because the course data now lives in the backend. Building pages in advance would freeze the data at build time, and the build would fail if the backend is not running. With `cache: "no-store"` both `/courses` and `/courses/[id]` are marked `ƒ` (dynamic) and always fetch fresh data on request.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The like button sends a `POST` with no body and no custom headers — a "simple" request in CORS terms, so the browser skips the preflight. The enrollment form sends `Content-Type: application/json`, which goes beyond simple request rules, so the browser first sends an `OPTIONS` preflight to ask for permission.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Breakage journal
 
-## Lab 2: Styling with Tailwind CSS and shadcn/ui
-- Integrated `shadcn/ui` with `Card` and `Button` components.
-- Made the course catalog page responsive using Tailwind CSS grid (1 column on mobile, 2 on tablet, 3 on desktop).
-- Styled navigation with hover states and layout borders.
+### Breakage 1: CORS removed entirely
+- What I did: commented out the whole `app.add_middleware(CORSMiddleware, ...)` block
+- Console: `Access to fetch at 'http://localhost:8000/courses' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource`
+- Network: courses — red (CORS error), like POST went through but was blocked, OPTIONS enrollments → 405
+- Cause: no `access-control-allow-origin` header in any response; `/courses` page still worked (server-to-server request)
+- How I found it: step 3 of the algorithm — no `access-control-allow-origin` in response headers
+
+### Breakage 2: trailing slash in allow_origins
+- What I did: `allow_origins=["http://localhost:3000/"]`
+- Console: same CORS message as breakage 1
+- Network: courses — red, OPTIONS enrollments → 400 `Disallowed CORS origin`
+- Cause: `"http://localhost:3000/"` with a trailing slash matches no origin
+- How I found it: step 3 — header missing; step 4 — OPTIONS returned 400
+
+### Breakage 3: allow_methods removed
+- What I did: deleted the `allow_methods=["*"]` line
+- Console: `Response to preflight request doesn't pass access control check: It does not have HTTP ok status`
+- Network: /filter and like worked; OPTIONS enrollments → 400, POST not sent
+- Cause: only GET is allowed by default; POST is rejected; `access-control-allow-origin` was present but `access-control-allow-methods` only showed GET
+- How I found it: step 4 — OPTIONS returned 400; response showed methods didn't include POST
+
+### Breakage 4: different origin (127.0.0.1)
+- What I did: opened frontend at `http://127.0.0.1:3000/filter` (added `allowedDevOrigins: ["127.0.0.1"]` to next.config.ts)
+- Console: `Access to fetch at 'http://localhost:8000/courses' from origin 'http://127.0.0.1:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present`
+- Network: courses — red, backend log showed 200 OK
+- Cause: `localhost` and `127.0.0.1` are different origins; only `http://localhost:3000` is in `allow_origins`
+- How I found it: step 3 — no `access-control-allow-origin`; header value didn't match the page origin
+
+### Breakage 5: Python error masquerading as CORS
+- What I did: changed `p["offset"]` to `p["ofset"]` in `list_courses`
+- Console: `No 'Access-Control-Allow-Origin' header is present` — looks like CORS
+- Network: courses — red (CORS error); like and form still worked; `/courses` page showed error.tsx
+- Cause: unhandled Python `KeyError` → 500 response produced outside `CORSMiddleware` → no `access-control-*` headers; not a CORS problem
+- How I found it: step 5 — backend terminal showed `500 Internal Server Error` and `KeyError: 'ofset'`; the fact that `/courses` (server-to-server) also failed confirmed it was a server error
